@@ -6,7 +6,7 @@ from pgvector.sqlalchemy import Vector
 # Use env var if present (for Neon / cloud), otherwise fall back to local Docker DB
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://raguser:ragpassword@localhost:5432/ragdb",
+    "postgresql://raguser:ragpassword@localhost:5432/ragdb",
 )
 
 engine = create_engine(DATABASE_URL)
