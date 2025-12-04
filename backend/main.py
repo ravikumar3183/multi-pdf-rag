@@ -13,32 +13,33 @@ from fastapi.middleware.cors import CORSMiddleware
 init_db()
 
 load_dotenv()
+
+# GEMINI setup
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-llm = genai.GenerativeModel("gemini-2.5-flash")
+llm = genai.GenerativeModel("gemini-2.0-flash")   # 🔥 lightweight, cheaper memory
 
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        # you will later add your deployed frontend URL here
-    ],
+    allow_origins=["*"],           # allow all origins for front-end deployment
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# load model once
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# 🔥 Lazy Model Loading (prevents Render 512MB OOM)
+model = None
 
-# in-memory store (Stage-1)
-documents = []
-embeddings = []
+def get_model():
+    global model
+    if model is None:
+        model = SentenceTransformer("all-MiniLM-L6-v2")   # loads only when needed
+    return model
 
 
 def embed(text: str):
-    return model.encode(text).tolist()
+    return get_model().encode(text).tolist()
 
 
 def split_text(text, chunk_size=800):
@@ -51,7 +52,7 @@ def clean_text(text: str) -> str:
 
 @app.get("/")
 def home():
-    return {"message": "Multi-PDF RAG Backend is running!"}
+    return {"message": "Backend is running!"}
 
 
 @app.post("/upload_pdfs")
@@ -77,13 +78,12 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
             if not chunk:
                 continue
             emb = embed(chunk)
-            c = Chunk(
+            db.add(Chunk(
                 document_id=doc.id,
                 text=chunk,
                 embedding=emb,
-                fts=chunk,
-            )
-            db.add(c)
+                fts=chunk
+            ))
 
         db.commit()
     return {"message": "PDFs stored in DB"}
@@ -118,45 +118,32 @@ async def ask(q: Question):
     """)
     bm_results = db.execute(bm_sql, {"qtext": q.question}).fetchall()
 
-    combined: dict[int, float] = {}
+    combined = {}
     for r in sem_results:
-        combined[r.id] = combined.get(r.id, 0.0) + float(r.score)
+        combined[r.id] = combined.get(r.id, 0) + float(r.score)
     for r in bm_results:
-        combined[r.id] = combined.get(r.id, 0.0) + float(r.score)
+        combined[r.id] = combined.get(r.id, 0) + float(r.score)
 
     if not combined:
-        return {"answer": "I couldn't find any relevant information in the uploaded PDFs."}
+        return {"answer": "I couldn't find relevant information from PDFs."}
 
-    top_k = 5
-    top_ids = sorted(combined.keys(), key=lambda cid: combined[cid], reverse=True)[:top_k]
+    top_ids = sorted(combined.keys(), key=lambda cid: combined[cid], reverse=True)[:5]
     top_chunks = db.query(Chunk).filter(Chunk.id.in_(top_ids)).all()
-
     context = "\n\n---\n\n".join(ch.text for ch in top_chunks)
 
     prompt = f"""
-You are a helpful assistant answering questions based ONLY on the provided context.
-If the answer is not clearly contained in the context, say "I don't have enough information from the documents."
+Answer ONLY based on the context below.
+If answer is not present, say:
+"I don't have enough information from the documents."
 
 Context:
 {context}
 
 Question:
 {q.question}
-
-Answer in a clear and concise paragraph:
 """
 
     response = llm.generate_content(prompt)
-    answer_text = response.text if hasattr(response, "text") else "LLM did not return text."
+    answer_text = response.text if hasattr(response, "text") else "No answer returned."
 
     return {"answer": answer_text}
-
-
-# 👇 Add this block at the VERY BOTTOM of the file
-if __name__ == "__main__":
-    # This is only used when you run: python main.py
-    # Render uses `uvicorn main:app`, where __name__ != "__main__",
-    # so this block won't interfere with Render.
-    port = int(os.environ.get("PORT", 8000))
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
