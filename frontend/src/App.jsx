@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import "./App.css";
 
-const API_BASE = import.meta.env.VITE_BACKEND_URL;
+const API_BASE = "https://multi-pdf-rag.onrender.com";
+
 
 
 function App() {
