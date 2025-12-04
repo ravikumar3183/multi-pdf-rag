@@ -16,7 +16,7 @@ load_dotenv()
 
 # GEMINI setup
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-llm = genai.GenerativeModel("gemini-2.5-flash")   # 🔥 lightweight, cheaper memory
+llm = genai.GenerativeModel("gemini-2.0-flash")   # 🔥 lightweight, cheaper memory
 
 app = FastAPI()
 
