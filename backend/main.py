@@ -22,7 +22,10 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],           # allow all origins for front-end deployment
+    allow_origins=[
+        "http://localhost:5173",
+        "https://your-netlify-site.netlify.app",
+    ],# allow all origins for front-end deployment
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
