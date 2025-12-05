@@ -24,7 +24,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",
-        "https://your-netlify-site.netlify.app",
+        "https://multi-pdf-rag.netlify.app",
     ],# allow all origins for front-end deployment
     allow_credentials=True,
     allow_methods=["*"],
