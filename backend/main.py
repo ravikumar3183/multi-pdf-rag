@@ -1,10 +1,11 @@
+# main.py
 from fastapi import FastAPI, UploadFile, File
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from dotenv import load_dotenv
 import google.generativeai as genai
-from sentence_transformers import SentenceTransformer
+# REMOVED: from sentence_transformers import SentenceTransformer
 import pdfplumber
 import os
 
@@ -21,33 +22,33 @@ llm = genai.GenerativeModel("gemini-2.0-flash")
 # ---------- FastAPI app ----------
 app = FastAPI()
 
-# CORS: allow any origin (safe enough for this demo)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # or list specific origins if you prefer
-    allow_credentials=False,  # must be False when using "*"
+    allow_origins=["*"], 
+    allow_credentials=True, # Changed to True usually safer for some browsers, but False works with * too.
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ---------- Embedding model (lighter) ----------
-# L3-v2 is smaller than all-MiniLM-L6-v2 and better for Render free tier
-MODEL_NAME = "sentence-transformers/paraphrase-MiniLM-L3-v2"
-model = SentenceTransformer(MODEL_NAME)
-
+# ---------- Embedding model (Gemini API) ----------
+# No local model loading = Low RAM usage
 
 def embed(text: str) -> list[float]:
-    """Return embedding as Python list[float] for pgvector."""
-    return model.encode(text).tolist()
+    """Return embedding using Gemini API (768 dims)."""
+    # Using text-embedding-004 which is standard and free-tier eligible
+    result = genai.embed_content(
+        model="models/text-embedding-004",
+        content=text,
+        task_type="retrieval_document"
+    )
+    return result['embedding']
 
 
 def split_text(text: str, chunk_size: int = 800) -> list[str]:
-    """Simple fixed-size chunking."""
     return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 
 def clean_text(text: str) -> str:
-    """Remove NULs etc. to avoid DB errors."""
     return text.replace("\x00", " ").strip()
 
 
@@ -63,7 +64,6 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
     total_chunks = 0
 
     for file in files:
-        # 1) read PDF text
         with pdfplumber.open(file.file) as pdf:
             pages_text = []
             for page in pdf.pages:
@@ -71,18 +71,17 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
                 pages_text.append(clean_text(t))
             full_text = "\n".join(pages_text)
 
-        # 2) create Document row
         doc = Document(filename=file.filename)
         db.add(doc)
         db.commit()
         db.refresh(doc)
 
-        # 3) chunk + embed
         for chunk in split_text(full_text):
             chunk = clean_text(chunk)
             if not chunk:
                 continue
 
+            # This now calls Gemini API, not local RAM
             emb = embed(chunk)
 
             db.add(
@@ -108,7 +107,15 @@ class Question(BaseModel):
 @app.post("/ask")
 async def ask(q: Question):
     db = SessionLocal()
-    q_emb = embed(q.question)
+    
+    # Embed the question using Gemini
+    q_result = genai.embed_content(
+        model="models/text-embedding-004",
+        content=q.question,
+        task_type="retrieval_query"
+    )
+    q_emb = q_result['embedding']
+    
     vec_str = "[" + ",".join(str(x) for x in q_emb) + "]"
 
     # 1) semantic search (pgvector)
@@ -133,7 +140,6 @@ async def ask(q: Question):
     """)
     bm_results = db.execute(bm_sql, {"qtext": q.question}).fetchall()
 
-    # 3) Combine scores
     combined: dict[int, float] = {}
 
     for r in sem_results:
@@ -145,14 +151,12 @@ async def ask(q: Question):
     if not combined:
         return {"answer": "I couldn't find any relevant information in the uploaded PDFs."}
 
-    # 4) Take top-k chunks as context
     top_k = 5
     top_ids = sorted(combined.keys(), key=lambda cid: combined[cid], reverse=True)[:top_k]
     top_chunks = db.query(Chunk).filter(Chunk.id.in_(top_ids)).all()
 
     context = "\n\n---\n\n".join(ch.text for ch in top_chunks)
 
-    # 5) Ask Gemini
     prompt = f"""
 You are a helpful assistant answering questions based ONLY on the provided context.
 If the answer is not clearly contained in the context, say
