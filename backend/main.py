@@ -58,11 +58,29 @@ def home():
 def list_documents():
     db = SessionLocal()
     docs = db.query(Document).all()
-    # Return count and list of filenames
+    # Now returns ID and Filename so we can delete specific files
     return {
         "count": len(docs),
-        "documents": [d.filename for d in docs]
+        "documents": [{"id": d.id, "filename": d.filename} for d in docs]
     }
+
+# 2. ADD THIS NEW FUNCTION (Paste it before the @app.post("/upload_pdfs") line)
+@app.delete("/delete_document/{doc_id}")
+def delete_document(doc_id: int):
+    db = SessionLocal()
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    
+    if not doc:
+        return {"message": "Document not found"}
+
+    # 1. Delete all chunks belonging to this document
+    db.query(Chunk).filter(Chunk.document_id == doc_id).delete()
+    
+    # 2. Delete the document entry itself
+    db.delete(doc)
+    db.commit()
+    
+    return {"message": f"Deleted {doc.filename}"}
 
 
 # ---------- PDF upload & indexing ----------

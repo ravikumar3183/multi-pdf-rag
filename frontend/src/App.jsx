@@ -12,7 +12,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
 
-  // NEW: State to hold the list of documents from the database
+  // Stores objects: [{id: 1, filename: "abc.pdf"}, ...]
   const [dbDocs, setDbDocs] = useState([]); 
 
   const chatEndRef = useRef(null);
@@ -21,13 +21,27 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // NEW: Function to fetch the list of documents from backend
   const fetchDocuments = async () => {
     try {
       const res = await axios.get(`${API_BASE}/list_documents`);
-      setDbDocs(res.data.documents);
+      // Backend now returns a list of objects {id, filename}
+      setDbDocs(res.data.documents || []);
     } catch (err) {
       console.error("Error fetching documents:", err);
+    }
+  };
+
+  // --- NEW: Handle Delete ---
+  const handleDelete = async (docId, docName) => {
+    if (!window.confirm(`Are you sure you want to delete "${docName}"?`)) return;
+
+    try {
+      await axios.delete(`${API_BASE}/delete_document/${docId}`);
+      // Remove from UI immediately
+      setDbDocs((prev) => prev.filter((d) => d.id !== docId));
+    } catch (err) {
+      console.error("Delete failed:", err);
+      alert("Failed to delete document.");
     }
   };
 
@@ -35,7 +49,6 @@ function App() {
     scrollToBottom();
   }, [messages, loading]);
 
-  // NEW: Fetch documents when the app first loads
   useEffect(() => {
     fetchDocuments();
   }, []);
@@ -61,8 +74,6 @@ function App() {
       });
 
       setUploadStatus(res.data.message || "Upload complete!");
-      
-      // Clear selected files and refresh the list from DB
       setFiles([]); 
       fetchDocuments();
 
@@ -113,7 +124,6 @@ function App() {
   return (
     <div className="app-root">
       <div className="app-shell">
-        {/* Top bar */}
         <header className="app-header">
           <div className="logo-pill">
             <span className="logo-icon">📚</span>
@@ -127,7 +137,6 @@ function App() {
         </header>
 
         <main className="app-main">
-          {/* Left: Upload / Info */}
           <section className="panel upload-panel">
             <h2>1. Upload PDFs</h2>
             <p className="panel-subtitle">
@@ -154,7 +163,6 @@ function App() {
               </button>
             </div>
 
-            {/* List of files currently selected (waiting to upload) */}
             {files.length > 0 && (
               <div className="file-list">
                 <p style={{fontSize: "0.8rem", color: "#666"}}>Selected to upload:</p>
@@ -178,24 +186,35 @@ function App() {
               </p>
             )}
 
-            {/* NEW: Knowledge Base Section (Shows DB files) */}
             <hr className="divider" />
+            
+            {/* UPDATED KNOWLEDGE BASE SECTION */}
             <h3>📚 Knowledge Base ({dbDocs.length})</h3>
-            <div className="file-list">
+            <div className="file-list-db">
                 {dbDocs.length === 0 ? (
                     <p style={{color: "#888", fontSize: "0.9rem"}}>No documents indexed yet.</p>
                 ) : (
-                    dbDocs.map((docName, i) => (
-                        <span key={i} className="file-pill" style={{backgroundColor: "#eef2ff", color: "#4f46e5"}}>
-                            ✅ {docName}
-                        </span>
+                    dbDocs.map((doc) => (
+                        <div key={doc.id} className="db-file-row">
+                            <div style={{display:"flex", alignItems:"center", gap:"8px"}}>
+                              <span className="file-icon">📄</span>
+                              <span className="file-name">{doc.filename}</span>
+                            </div>
+                            {/* Delete Button */}
+                            <button 
+                              onClick={() => handleDelete(doc.id, doc.filename)}
+                              className="delete-btn"
+                              title="Delete this document"
+                            >
+                              🗑️
+                            </button>
+                        </div>
                     ))
                 )}
             </div>
 
           </section>
 
-          {/* Right: Chat */}
           <section className="panel chat-panel">
             <h2>2. Ask Questions</h2>
             <p className="panel-subtitle">
