@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import "./App.css";
 
-const API_BASE = "https://multi-pdf-rag.onrender.com";
+// Ensure this matches your live Render backend URL
+const API_BASE = "https://multi-pdf-rag.onrender.com"; 
 
 function App() {
   const [files, setFiles] = useState([]);
@@ -11,8 +12,6 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
-
-  // Stores objects: [{id: 1, filename: "abc.pdf"}, ...]
   const [dbDocs, setDbDocs] = useState([]); 
 
   const chatEndRef = useRef(null);
@@ -24,20 +23,16 @@ function App() {
   const fetchDocuments = async () => {
     try {
       const res = await axios.get(`${API_BASE}/list_documents`);
-      // Backend now returns a list of objects {id, filename}
       setDbDocs(res.data.documents || []);
     } catch (err) {
       console.error("Error fetching documents:", err);
     }
   };
 
-  // --- NEW: Handle Delete ---
   const handleDelete = async (docId, docName) => {
-    if (!window.confirm(`Are you sure you want to delete "${docName}"?`)) return;
-
+    if (!window.confirm(`Delete "${docName}"?`)) return;
     try {
       await axios.delete(`${API_BASE}/delete_document/${docId}`);
-      // Remove from UI immediately
       setDbDocs((prev) => prev.filter((d) => d.id !== docId));
     } catch (err) {
       console.error("Delete failed:", err);
@@ -60,12 +55,12 @@ function App() {
 
   const handleUpload = async () => {
     if (!files.length) {
-      alert("Please choose at least one PDF");
+      alert("Please select a PDF first.");
       return;
     }
     try {
       setUploading(true);
-      setUploadStatus("Uploading & indexing PDFs...");
+      setUploadStatus("Uploading...");
       const formData = new FormData();
       files.forEach((file) => formData.append("files", file));
 
@@ -73,13 +68,14 @@ function App() {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      setUploadStatus(res.data.message || "Upload complete!");
+      setUploadStatus("Done!");
       setFiles([]); 
       fetchDocuments();
+      setTimeout(() => setUploadStatus(""), 2000); // Clear status after 2s
 
     } catch (err) {
       console.error("Upload error:", err.response?.data || err.message);
-      setUploadStatus("Error uploading PDFs");
+      setUploadStatus("Failed.");
     } finally {
       setUploading(false);
     }
@@ -91,23 +87,16 @@ function App() {
 
     const newMessages = [...messages, { role: "user", text: question }];
     setMessages(newMessages);
+    setQuestion(""); // Clear input immediately
 
     try {
       const res = await axios.post(`${API_BASE}/ask`, { question });
-      const answer = res.data.answer || "(No answer)";
-      setMessages([
-        ...newMessages,
-        { role: "assistant", text: answer },
-      ]);
-      setQuestion("");
+      const answer = res.data.answer || "No answer returned.";
+      setMessages((prev) => [...prev, { role: "assistant", text: answer }]);
     } catch (err) {
-      console.error(err);
-      setMessages([
-        ...newMessages,
-        {
-          role: "assistant",
-          text: "Error retrieving answer from backend.",
-        },
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", text: "Error connecting to server." },
       ]);
     } finally {
       setLoading(false);
@@ -124,173 +113,103 @@ function App() {
   return (
     <div className="app-root">
       <div className="app-shell">
+        
+        {/* HEADER */}
         <header className="app-header">
-          <div className="logo-pill">
-            <span className="logo-icon">📚</span>
+          <div className="brand">
+            <span className="logo-icon">⚡</span>
+            <h1>RAG Chatbot</h1>
           </div>
-          <div>
-            <h1>Multi-PDF RAG Chatbot</h1>
-            <p className="subtitle">
-              Ask questions across all your PDFs using hybrid search + Gemini.
-            </p>
-          </div>
+          <span className="model-badge">Gemini 2.0 Flash</span>
         </header>
 
         <main className="app-main">
+          
+          {/* LEFT SIDEBAR */}
           <section className="panel upload-panel">
-            <h2>1. Upload PDFs</h2>
-            <p className="panel-subtitle">
-              Select one or more PDF files and index them into the knowledge base.
-            </p>
-
-            <div className="upload-row">
-              <label className="file-input-label">
-                Choose Files
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  multiple
-                  onChange={handleFileChange}
-                />
-              </label>
-
-              <button
-                className="primary-btn"
-                onClick={handleUpload}
-                disabled={uploading || !files.length}
-              >
-                {uploading ? "Indexing..." : "Upload & Index"}
-              </button>
-            </div>
-
-            {files.length > 0 && (
-              <div className="file-list">
-                <p style={{fontSize: "0.8rem", color: "#666"}}>Selected to upload:</p>
-                {files.map((f) => (
-                  <span key={f.name} className="file-pill">
-                    {f.name}
-                  </span>
-                ))}
-              </div>
-            )}
-
-            {uploadStatus && (
-              <p
-                className={
-                  uploadStatus.startsWith("Error")
-                    ? "status status-error"
-                    : "status status-ok"
-                }
-              >
-                {uploadStatus}
+            <div>
+              <h2>Knowledge Base</h2>
+              <p style={{fontSize: "0.8rem", color: "#a1a1aa", marginBottom: "15px"}}>
+                Upload PDFs to chat with them.
               </p>
-            )}
 
-            <hr className="divider" />
-            
-            {/* UPDATED KNOWLEDGE BASE SECTION */}
-            <h3>📚 Knowledge Base ({dbDocs.length})</h3>
-            <div className="file-list-db">
-                {dbDocs.length === 0 ? (
-                    <p style={{color: "#888", fontSize: "0.9rem"}}>No documents indexed yet.</p>
-                ) : (
-                    dbDocs.map((doc) => (
-                        <div key={doc.id} className="db-file-row">
-                            <div style={{display:"flex", alignItems:"center", gap:"8px"}}>
-                              <span className="file-icon">📄</span>
-                              <span className="file-name">{doc.filename}</span>
-                            </div>
-                            {/* Delete Button */}
-                            <button 
-                              onClick={() => handleDelete(doc.id, doc.filename)}
-                              className="delete-btn"
-                              title="Delete this document"
-                            >
-                              🗑️
-                            </button>
-                        </div>
-                    ))
-                )}
+              <div style={{display: "flex", gap: "10px", marginBottom: "10px"}}>
+                <label className="file-input-label">
+                  {files.length > 0 ? `${files.length} files` : "+ Select PDF"}
+                  <input type="file" accept="application/pdf" multiple onChange={handleFileChange} />
+                </label>
+                <button className="primary-btn" onClick={handleUpload} disabled={uploading || !files.length} style={{width: "auto"}}>
+                  {uploading ? "..." : "↑"}
+                </button>
+              </div>
+              
+              {uploadStatus && <div style={{fontSize: "0.8rem", color: "#6366f1"}}>{uploadStatus}</div>}
             </div>
 
+            <div className="file-list-db">
+              {dbDocs.length === 0 ? (
+                <div style={{textAlign: "center", color: "#3f3f46", fontSize: "0.85rem", marginTop: "20px"}}>
+                  No documents found.
+                </div>
+              ) : (
+                dbDocs.map((doc) => (
+                  <div key={doc.id} className="db-file-row">
+                    <div className="file-info">
+                      <span>📄</span>
+                      <span className="file-name" title={doc.filename}>{doc.filename}</span>
+                    </div>
+                    <button onClick={() => handleDelete(doc.id, doc.filename)} className="delete-btn">×</button>
+                  </div>
+                ))
+              )}
+            </div>
           </section>
 
+          {/* RIGHT MAIN CHAT */}
           <section className="panel chat-panel">
-            <h2>2. Ask Questions</h2>
-            <p className="panel-subtitle">
-              Your questions will be answered using only the uploaded PDFs.
-            </p>
-
             <div className="chat-window">
               {messages.length === 0 && (
                 <div className="chat-empty">
-                  <p>💡 Try asking:</p>
-                  <ul>
-                    <li>“Summarise the main ideas from these notes.”</li>
-                    <li>“What is Lyapunov-Floquet theory?”</li>
-                    <li>“Explain eigenvalues in simple terms.”</li>
-                  </ul>
+                  <h1>What can I help you find?</h1>
+                  <p>Ask questions about your {dbDocs.length} uploaded documents.</p>
                 </div>
               )}
 
               {messages.map((m, idx) => (
-                <div
-                  key={idx}
-                  className={`message-row ${
-                    m.role === "user" ? "align-right" : "align-left"
-                  }`}
-                >
-                  <div
-                    className={`message-bubble ${
-                      m.role === "user" ? "user" : "assistant"
-                    }`}
-                  >
-                    <div className="message-meta">
-                      {m.role === "user" ? "You" : "AI"}
-                    </div>
-                    <div className="message-text">{m.text}</div>
+                <div key={idx} className={`message-row role-${m.role}`}>
+                  <div className="message-avatar">
+                    {m.role === "user" ? "👤" : "✨"}
                   </div>
+                  <div className="message-content">{m.text}</div>
                 </div>
               ))}
 
               {loading && (
-                <div className="message-row align-left">
-                  <div className="message-bubble assistant">
-                    <div className="message-meta">AI</div>
-                    <div className="typing-indicator">
-                      <span></span>
-                      <span></span>
-                      <span></span>
-                    </div>
-                  </div>
+                <div className="message-row role-assistant">
+                  <div className="message-avatar">✨</div>
+                  <div className="message-content">Thinking...</div>
                 </div>
               )}
-
               <div ref={chatEndRef} />
             </div>
 
-            <div className="chat-input-row">
-              <textarea
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder="Ask something about your uploaded PDFs..."
-                rows={3}
-              />
-              <button
-                className="primary-btn"
-                onClick={handleAsk}
-                disabled={loading || !question.trim()}
-              >
-                {loading ? "Asking..." : "Ask"}
-              </button>
+            <div className="chat-input-container">
+              <div className="chat-input-wrapper">
+                <textarea
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder="Ask a question..."
+                  rows={1}
+                />
+                <button className="send-btn" onClick={handleAsk} disabled={loading || !question.trim()}>
+                  ➜
+                </button>
+              </div>
             </div>
           </section>
-        </main>
 
-        <footer className="app-footer">
-          <span>Built with FastAPI · PostgreSQL + pgvector · React · Gemini</span>
-        </footer>
+        </main>
       </div>
     </div>
   );
