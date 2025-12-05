@@ -22,10 +22,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "https://multi-pdf-rag.netlify.app",
-    ],# allow all origins for front-end deployment
+    allow_origins=["*"],# allow all origins 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
