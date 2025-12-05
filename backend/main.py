@@ -5,7 +5,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 from dotenv import load_dotenv
 import google.generativeai as genai
-# REMOVED: from sentence_transformers import SentenceTransformer
 import pdfplumber
 import os
 
@@ -25,17 +24,14 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
-    allow_credentials=True, # Changed to True usually safer for some browsers, but False works with * too.
+    allow_credentials=True, 
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 # ---------- Embedding model (Gemini API) ----------
-# No local model loading = Low RAM usage
-
 def embed(text: str) -> list[float]:
     """Return embedding using Gemini API (768 dims)."""
-    # Using text-embedding-004 which is standard and free-tier eligible
     result = genai.embed_content(
         model="models/text-embedding-004",
         content=text,
@@ -55,6 +51,18 @@ def clean_text(text: str) -> str:
 @app.get("/")
 def home():
     return {"message": "Backend is running!"}
+
+
+# --- NEW: List all documents ---
+@app.get("/list_documents")
+def list_documents():
+    db = SessionLocal()
+    docs = db.query(Document).all()
+    # Return count and list of filenames
+    return {
+        "count": len(docs),
+        "documents": [d.filename for d in docs]
+    }
 
 
 # ---------- PDF upload & indexing ----------
@@ -81,7 +89,6 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
             if not chunk:
                 continue
 
-            # This now calls Gemini API, not local RAM
             emb = embed(chunk)
 
             db.add(

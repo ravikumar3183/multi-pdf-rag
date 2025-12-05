@@ -4,8 +4,6 @@ import "./App.css";
 
 const API_BASE = "https://multi-pdf-rag.onrender.com";
 
-
-
 function App() {
   const [files, setFiles] = useState([]);
   const [uploadStatus, setUploadStatus] = useState("");
@@ -14,15 +12,33 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
 
+  // NEW: State to hold the list of documents from the database
+  const [dbDocs, setDbDocs] = useState([]); 
+
   const chatEndRef = useRef(null);
 
   const scrollToBottom = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
+  // NEW: Function to fetch the list of documents from backend
+  const fetchDocuments = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/list_documents`);
+      setDbDocs(res.data.documents);
+    } catch (err) {
+      console.error("Error fetching documents:", err);
+    }
+  };
+
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
+
+  // NEW: Fetch documents when the app first loads
+  useEffect(() => {
+    fetchDocuments();
+  }, []);
 
   const handleFileChange = (e) => {
     setFiles(Array.from(e.target.files));
@@ -45,6 +61,11 @@ function App() {
       });
 
       setUploadStatus(res.data.message || "Upload complete!");
+      
+      // Clear selected files and refresh the list from DB
+      setFiles([]); 
+      fetchDocuments();
+
     } catch (err) {
       console.error("Upload error:", err.response?.data || err.message);
       setUploadStatus("Error uploading PDFs");
@@ -133,8 +154,10 @@ function App() {
               </button>
             </div>
 
+            {/* List of files currently selected (waiting to upload) */}
             {files.length > 0 && (
               <div className="file-list">
+                <p style={{fontSize: "0.8rem", color: "#666"}}>Selected to upload:</p>
                 {files.map((f) => (
                   <span key={f.name} className="file-pill">
                     {f.name}
@@ -154,6 +177,22 @@ function App() {
                 {uploadStatus}
               </p>
             )}
+
+            {/* NEW: Knowledge Base Section (Shows DB files) */}
+            <hr className="divider" />
+            <h3>📚 Knowledge Base ({dbDocs.length})</h3>
+            <div className="file-list">
+                {dbDocs.length === 0 ? (
+                    <p style={{color: "#888", fontSize: "0.9rem"}}>No documents indexed yet.</p>
+                ) : (
+                    dbDocs.map((docName, i) => (
+                        <span key={i} className="file-pill" style={{backgroundColor: "#eef2ff", color: "#4f46e5"}}>
+                            ✅ {docName}
+                        </span>
+                    ))
+                )}
+            </div>
+
           </section>
 
           {/* Right: Chat */}
