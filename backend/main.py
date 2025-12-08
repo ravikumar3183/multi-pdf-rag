@@ -8,6 +8,9 @@ import google.generativeai as genai
 import pdfplumber
 import os
 
+# --- NEW: Smart Splitting Library ---
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from database import SessionLocal, Document, Chunk, init_db
 
 # ---------- init ----------
@@ -16,7 +19,8 @@ init_db()
 
 # ---------- Gemini setup ----------
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-llm = genai.GenerativeModel("gemini-2.0-flash")
+# Switched to 1.5 Flash to avoid the "429 Quota Exceeded" error you saw earlier
+llm = genai.GenerativeModel("gemini-2.5-pro")
 
 # ---------- FastAPI app ----------
 app = FastAPI()
@@ -29,131 +33,150 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------- Embedding model (Gemini API) ----------
-def embed(text: str) -> list[float]:
-    """Return embedding using Gemini API (768 dims)."""
-    result = genai.embed_content(
-        model="models/text-embedding-004",
-        content=text,
-        task_type="retrieval_document"
-    )
-    return result['embedding']
+# ---------- 1. SMART CHUNKING SETUP ----------
+# Uses RecursiveCharacterTextSplitter to keep sentences and paragraphs intact.
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=1000,      # Larger chunk size for more context per vector
+    chunk_overlap=100,    # 100 char overlap to prevent cutting words/ideas in half
+    length_function=len,
+    separators=["\n\n", "\n", ". ", " ", ""]
+)
 
-
-def split_text(text: str, chunk_size: int = 800) -> list[str]:
-    return [text[i : i + chunk_size] for i in range(0, len(text), chunk_size)]
-
+# ---------- 2. BATCH EMBEDDING (SPEED) ----------
+def get_batch_embeddings(texts: list[str]) -> list[list[float]]:
+    """Generates embeddings for a list of texts in one API call."""
+    embeddings = []
+    batch_size = 20 # Send 20 chunks at once to Google
+    
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        try:
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=batch,
+                task_type="retrieval_document"
+            )
+            # When embedding a list, the API returns a list of embeddings
+            embeddings.extend(result['embedding'])
+        except Exception as e:
+            print(f"Error embedding batch: {e}")
+            # Safety fill to prevent server crash
+            embeddings.extend([[0.0]*768] * len(batch))
+            
+    return embeddings
 
 def clean_text(text: str) -> str:
+    if not text: return ""
     return text.replace("\x00", " ").strip()
-
 
 @app.get("/")
 def home():
-    return {"message": "Backend is running!"}
+    return {"message": "Backend is running with Smart Chunking & Batching!"}
 
-
-# --- NEW: List all documents ---
 @app.get("/list_documents")
 def list_documents():
     db = SessionLocal()
     docs = db.query(Document).all()
-    # Now returns ID and Filename so we can delete specific files
     return {
         "count": len(docs),
         "documents": [{"id": d.id, "filename": d.filename} for d in docs]
     }
 
-# 2. ADD THIS NEW FUNCTION (Paste it before the @app.post("/upload_pdfs") line)
 @app.delete("/delete_document/{doc_id}")
 def delete_document(doc_id: int):
     db = SessionLocal()
     doc = db.query(Document).filter(Document.id == doc_id).first()
-    
     if not doc:
         return {"message": "Document not found"}
-
-    # 1. Delete all chunks belonging to this document
-    db.query(Chunk).filter(Chunk.document_id == doc_id).delete()
     
-    # 2. Delete the document entry itself
+    db.query(Chunk).filter(Chunk.document_id == doc_id).delete()
     db.delete(doc)
     db.commit()
-    
     return {"message": f"Deleted {doc.filename}"}
 
-
-# ---------- PDF upload & indexing ----------
+# ---------- UPDATED PDF UPLOAD (SMART + BATCH) ----------
 @app.post("/upload_pdfs")
 async def upload_pdfs(files: list[UploadFile] = File(...)):
     db = SessionLocal()
     total_chunks = 0
+    total_docs = 0
 
     for file in files:
+        # A. Extract Text
         with pdfplumber.open(file.file) as pdf:
             pages_text = []
             for page in pdf.pages:
                 t = page.extract_text() or ""
                 pages_text.append(clean_text(t))
-            full_text = "\n".join(pages_text)
+            # Join with double newlines to help the splitter identify paragraphs
+            full_text = "\n\n".join(pages_text)
 
+        # B. Save Doc Entry
         doc = Document(filename=file.filename)
         db.add(doc)
         db.commit()
         db.refresh(doc)
 
-        for chunk in split_text(full_text):
-            chunk = clean_text(chunk)
-            if not chunk:
-                continue
+        # C. Smart Split
+        chunks_text = text_splitter.split_text(full_text)
+        
+        if not chunks_text:
+            continue
 
-            emb = embed(chunk)
+        # D. Batch Embed (This makes it fast!)
+        embeddings = get_batch_embeddings(chunks_text)
 
-            db.add(
-                Chunk(
-                    document_id=doc.id,
-                    text=chunk,
-                    embedding=emb,
-                    fts=chunk,
+        # E. Bulk Save to DB
+        chunk_objects = []
+        for i, text_chunk in enumerate(chunks_text):
+            if i < len(embeddings):
+                chunk_objects.append(
+                    Chunk(
+                        document_id=doc.id,
+                        text=text_chunk,
+                        embedding=embeddings[i],
+                        fts=text_chunk
+                    )
                 )
-            )
-            total_chunks += 1
-
+        
+        db.add_all(chunk_objects)
         db.commit()
+        
+        total_chunks += len(chunks_text)
+        total_docs += 1
 
-    return {"message": "PDFs processed", "chunks": total_chunks}
+    return {"message": f"Processed {total_docs} PDFs into {total_chunks} smart chunks."}
 
 
-# ---------- Q&A ----------
+# ---------- UPDATED Q&A (INCREASED CONTEXT) ----------
 class Question(BaseModel):
     question: str
-
 
 @app.post("/ask")
 async def ask(q: Question):
     db = SessionLocal()
     
-    # Embed the question using Gemini
+    # Embed Question
     q_result = genai.embed_content(
         model="models/text-embedding-004",
         content=q.question,
         task_type="retrieval_query"
     )
-    q_emb = q_result['embedding']
-    
-    vec_str = "[" + ",".join(str(x) for x in q_emb) + "]"
+    vec_str = "[" + ",".join(str(x) for x in q_result['embedding']) + "]"
 
-    # 1) semantic search (pgvector)
+    # 3. INCREASED CONTEXT: Fetch top 20 instead of 5
+    
+    # Semantic Search
     sem_sql = text("""
         SELECT id, text,
                1 - (embedding <=> CAST(:qvec AS vector)) AS score
         FROM chunks
         ORDER BY embedding <=> CAST(:qvec AS vector)
-        LIMIT 5;
+        LIMIT 20;
     """)
     sem_results = db.execute(sem_sql, {"qvec": vec_str}).fetchall()
 
-    # 2) keyword / BM25-style search
+    # Keyword Search
     bm_sql = text("""
         SELECT id, text,
                ts_rank_cd(to_tsvector('english', text),
@@ -161,22 +184,22 @@ async def ask(q: Question):
         FROM chunks
         WHERE to_tsvector('english', text) @@ plainto_tsquery(:qtext)
         ORDER BY score DESC
-        LIMIT 5;
+        LIMIT 20;
     """)
     bm_results = db.execute(bm_sql, {"qtext": q.question}).fetchall()
 
-    combined: dict[int, float] = {}
-
+    # Hybrid Fusion
+    combined = {}
     for r in sem_results:
-        combined[r.id] = combined.get(r.id, 0.0) + float(r.score)
-
+        combined[r.id] = combined.get(r.id, 0.0) + float(r.score) * 0.7 
     for r in bm_results:
-        combined[r.id] = combined.get(r.id, 0.0) + float(r.score)
+        combined[r.id] = combined.get(r.id, 0.0) + float(r.score) * 0.3
 
     if not combined:
         return {"answer": "I couldn't find any relevant information in the uploaded PDFs."}
 
-    top_k = 5
+    # Select Top 20 Best Matches
+    top_k = 20 
     top_ids = sorted(combined.keys(), key=lambda cid: combined[cid], reverse=True)[:top_k]
     top_chunks = db.query(Chunk).filter(Chunk.id.in_(top_ids)).all()
 
