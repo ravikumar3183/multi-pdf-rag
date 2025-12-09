@@ -20,7 +20,7 @@ init_db()
 # ---------- Gemini setup ----------
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 # Switched to 1.5 Flash to avoid the "429 Quota Exceeded" error you saw earlier
-llm = genai.GenerativeModel("gemma-3-1b")
+llm = genai.GenerativeModel("gemini-2.5-flash")
 
 # ---------- FastAPI app ----------
 app = FastAPI()
