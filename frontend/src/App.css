@@ -205,15 +205,21 @@ body {
   background: var(--bg-app);
   position: relative;
   height: 100%;
+  
+  /* --- CRITICAL FIXES FOR SCROLLING --- */
+  min-height: 0;      /* Stop Grid item from expanding to fit text content */
+  overflow: hidden;   /* Ensure child scrollbar handles the overflow */
+  padding: 0;
 }
 
 .chat-window {
   flex: 1;
   overflow-y: auto;
-  padding: 40px 15%; /* Keep chat centered but fluid */
+  padding: 40px 10%; /* Move padding inside the scrollable area */
   display: flex;
   flex-direction: column;
   gap: 24px;
+  scroll-behavior: smooth; /* Make auto-scroll look nice */
 }
 
 /* Messages */
