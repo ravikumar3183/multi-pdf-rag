@@ -28,6 +28,7 @@ class Chunk(Base):
     # CHANGED: 384 -> 768 to match Gemini embeddings
     embedding = Column(Vector(768)) 
     fts = Column(Text)
+    page_number = Column(Integer)
 
     document = relationship("Document", back_populates="chunks")
 
