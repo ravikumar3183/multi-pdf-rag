@@ -83,6 +83,80 @@ def list_documents():
         "documents": [{"id": d.id, "filename": d.filename} for d in docs]
     }
 
+
+# main.py (Add this new endpoint)
+
+@app.post("/summarize_document/{doc_id}")
+async def summarize_document(doc_id: int):
+    db = SessionLocal()
+    try:
+        # 1. Fetch all chunks for this document, ordered by page
+        chunks = db.query(Chunk).filter(Chunk.document_id == doc_id).order_by(Chunk.page_number).all()
+        
+        if not chunks:
+            return {"summary": "No content found to summarize."}
+
+        # 2. Group text by page number
+        pages = {}
+        for chunk in chunks:
+            if chunk.page_number not in pages:
+                pages[chunk.page_number] = []
+            pages[chunk.page_number].append(chunk.text)
+        
+        sorted_pages = sorted(pages.keys())
+        
+        # 3. "Map" Step: Summarize every 5 pages
+        batch_size = 5
+        mini_summaries = []
+        
+        for i in range(0, len(sorted_pages), batch_size):
+            batch_page_nums = sorted_pages[i : i + batch_size]
+            batch_text = ""
+            for p in batch_page_nums:
+                batch_text += f"\n--- Page {p} ---\n" + " ".join(pages[p])
+            
+            # Send to Gemini
+            prompt = f"""
+            You are a rigorous analyst. Summarize the following {len(batch_page_nums)} pages of a document.
+            Focus on key facts, dates, and definitions.
+            
+            Text:
+            {batch_text[:30000]} # Truncate safety for very large text
+            
+            Summary:
+            """
+            response = llm.generate_content(prompt)
+            mini_summaries.append(response.text)
+            time.sleep(1) # Rate limit safety
+
+        # 4. "Reduce" Step: Master Summary
+        combined_summaries = "\n\n".join(mini_summaries)
+        final_prompt = f"""
+        Here are summaries of different sections of a document. 
+        Combine them into one cohesive, structured Master Summary.
+        Use bullet points for key findings.
+        
+        Sections:
+        {combined_summaries}
+        
+        Master Summary:
+        """
+        final_response = llm.generate_content(final_prompt)
+        final_summary = final_response.text
+
+        # 5. Save to Database
+        doc = db.query(Document).filter(Document.id == doc_id).first()
+        doc.summary = final_summary
+        db.commit()
+
+        return {"summary": final_summary}
+
+    except Exception as e:
+        return {"summary": f"Error generating summary: {str(e)}"}
+    finally:
+        db.close()
+
+
 @app.delete("/delete_document/{doc_id}")
 def delete_document(doc_id: int):
     db = SessionLocal()

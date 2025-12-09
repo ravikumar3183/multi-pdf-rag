@@ -18,6 +18,7 @@ class Document(Base):
     __tablename__ = "documents"
     id = Column(Integer, primary_key=True)
     filename = Column(String)
+    summary = Column(Text, nullable=True)
     chunks = relationship("Chunk", back_populates="document")
 
 class Chunk(Base):
