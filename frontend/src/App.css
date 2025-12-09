@@ -351,3 +351,45 @@ textarea {
   color: var(--primary);
   font-family: var(--font-mono);
 }
+
+/* Add to App.css */
+
+.action-btn {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  font-size: 1.1rem;
+  transition: background 0.2s;
+}
+
+.summarize-btn {
+  color: var(--primary);
+}
+.summarize-btn:hover {
+  background: rgba(99, 102, 241, 0.1);
+}
+
+.delete-btn {
+  color: var(--text-muted);
+}
+.delete-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
+
+.new-chat-btn {
+  background: var(--bg-hover);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.new-chat-btn:hover {
+  background: var(--border);
+}

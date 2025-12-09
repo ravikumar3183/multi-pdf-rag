@@ -228,13 +228,19 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import "./App.css";
 
-const API_BASE = "https://multi-pdf-rag.onrender.com"; 
+const API_BASE = "https://multi-pdf-rag.onrender.com";
 
 function App() {
   const [files, setFiles] = useState([]);
   const [uploadStatus, setUploadStatus] = useState("");
   const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState([]);
+  
+  // 1. Chat Persistence: Load from Local Storage on boot
+  const [messages, setMessages] = useState(() => {
+    const saved = localStorage.getItem("chat_history");
+    return saved ? JSON.parse(saved) : [];
+  });
+  
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [dbDocs, setDbDocs] = useState([]); 
@@ -245,7 +251,6 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  // Fetch list of documents from Backend
   const fetchDocuments = async () => {
     try {
       const res = await axios.get(`${API_BASE}/list_documents`);
@@ -255,7 +260,6 @@ function App() {
     }
   };
 
-  // Delete a document
   const handleDelete = async (docId, docName) => {
     if (!window.confirm(`Delete "${docName}"?`)) return;
     try {
@@ -267,6 +271,40 @@ function App() {
     }
   };
 
+  // --- NEW: Handle Summarize ---
+  const handleSummarize = async (docId) => {
+    setLoading(true);
+    // Add a temp message
+    setMessages(prev => [...prev, { role: "assistant", text: "Generating summary... ⏳" }]);
+    
+    try {
+      const res = await axios.post(`${API_BASE}/summarize_document/${docId}`);
+      
+      // Update the last message with the real summary
+      setMessages(prev => {
+        const newMsgs = [...prev];
+        newMsgs[newMsgs.length - 1] = { 
+          role: "assistant", 
+          text: `📝 **Summary:**\n\n${res.data.summary}` 
+        };
+        return newMsgs;
+      });
+    } catch (err) {
+      console.error(err);
+      setMessages(prev => [...prev, { role: "assistant", text: "Failed to generate summary." }]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // --- NEW: Clear Chat ---
+  const clearChat = () => {
+    if (window.confirm("Start a new chat? This will clear current history.")) {
+      setMessages([]);
+      localStorage.removeItem("chat_history");
+    }
+  };
+
   useEffect(() => {
     scrollToBottom();
   }, [messages, loading]);
@@ -274,6 +312,11 @@ function App() {
   useEffect(() => {
     fetchDocuments();
   }, []);
+
+  // 2. Chat Persistence: Save to Local Storage on change
+  useEffect(() => {
+    localStorage.setItem("chat_history", JSON.stringify(messages));
+  }, [messages]);
 
   const handleFileChange = (e) => {
     setFiles(Array.from(e.target.files));
@@ -295,14 +338,11 @@ function App() {
         headers: { "Content-Type": "multipart/form-data" },
       });
 
-      // Show time taken from backend response
       const timeTaken = res.data.time_taken ? ` (${res.data.time_taken}s)` : "";
       setUploadStatus(`Done!${timeTaken}`);
       
       setFiles([]); 
       fetchDocuments();
-      
-      // Clear status after 5 seconds
       setTimeout(() => setUploadStatus(""), 5000); 
 
     } catch (err) {
@@ -319,13 +359,12 @@ function App() {
 
     const newMessages = [...messages, { role: "user", text: question }];
     setMessages(newMessages);
-    setQuestion(""); // Clear input immediately
+    setQuestion("");
 
     try {
       const res = await axios.post(`${API_BASE}/ask`, { question });
-      
       const answer = res.data.answer || "No answer returned.";
-      const sources = res.data.sources || []; // Capture sources if available
+      const sources = res.data.sources || [];
 
       setMessages((prev) => [
         ...prev,
@@ -352,18 +391,22 @@ function App() {
     <div className="app-root">
       <div className="app-shell">
         
-        {/* HEADER */}
         <header className="app-header">
           <div className="brand">
             <span className="logo-icon">⚡</span>
             <h1>RAG Chatbot</h1>
           </div>
-          <span className="model-badge">Gemini 1.5 Flash</span>
+          <div style={{display: "flex", gap: "10px", alignItems: "center"}}>
+            <span className="model-badge">Gemini 1.5 Flash</span>
+            {/* --- NEW CHAT BUTTON --- */}
+            <button onClick={clearChat} className="new-chat-btn">
+              + New Chat
+            </button>
+          </div>
         </header>
 
         <main className="app-main">
           
-          {/* LEFT SIDEBAR */}
           <section className="panel upload-panel">
             <div>
               <h2>Knowledge Base</h2>
@@ -401,20 +444,29 @@ function App() {
                       <span>📄</span>
                       <span className="file-name" title={doc.filename}>{doc.filename}</span>
                     </div>
-                    <button 
-                      onClick={() => handleDelete(doc.id, doc.filename)} 
-                      className="delete-btn"
-                      title="Delete document"
-                    >
-                      ×
-                    </button>
+                    {/* --- UPDATED ACTIONS: Summarize + Delete --- */}
+                    <div style={{display: "flex", gap: "5px"}}>
+                      <button 
+                        onClick={() => handleSummarize(doc.id)} 
+                        className="action-btn summarize-btn"
+                        title="Summarize Document"
+                      >
+                        📑
+                      </button>
+                      <button 
+                        onClick={() => handleDelete(doc.id, doc.filename)} 
+                        className="action-btn delete-btn"
+                        title="Delete document"
+                      >
+                        ×
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
             </div>
           </section>
 
-          {/* RIGHT MAIN CHAT */}
           <section className="panel chat-panel">
             <div className="chat-window">
               {messages.length === 0 && (
@@ -432,7 +484,6 @@ function App() {
                   <div className="message-content">
                     <div className="message-text" style={{whiteSpace: "pre-wrap"}}>{m.text}</div>
                     
-                    {/* Render Sources if they exist */}
                     {m.sources && m.sources.length > 0 && (
                       <div className="message-sources">
                         <p className="sources-label">📚 Sources used:</p>
