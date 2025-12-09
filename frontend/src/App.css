@@ -313,3 +313,35 @@ textarea {
   .panel.upload-panel { display: none; }
   .chat-window, .chat-input-container { padding: 20px; }
 }
+
+/* Add to App.css */
+
+.message-sources {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.sources-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin: 0 0 6px 0;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.sources-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.source-pill {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: var(--primary);
+  font-family: var(--font-mono);
+}

@@ -9,10 +9,9 @@ import pdfplumber
 import os
 import time
 
-# --- Smart Splitting Library ---
+# --- NEW: Smart Splitting Library ---
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Import the updated Chunk model (Make sure you updated database.py!)
 from database import SessionLocal, Document, Chunk, init_db
 
 # ---------- init ----------
@@ -21,7 +20,7 @@ init_db()
 
 # ---------- Gemini setup ----------
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-# Using 1.5 Flash for stability and high rate limits
+# Using 1.5 Flash for high limits and stability
 llm = genai.GenerativeModel("gemini-2.5-flash")
 
 # ---------- FastAPI app ----------
@@ -43,11 +42,10 @@ text_splitter = RecursiveCharacterTextSplitter(
     separators=["\n\n", "\n", ". ", " ", ""]
 )
 
-# ---------- BATCH EMBEDDING (Safe & Fast) ----------
+# ---------- BATCH EMBEDDING ----------
 def get_batch_embeddings(texts: list[str]) -> list[list[float]]:
-    """Generates embeddings with Rate Limit handling."""
     embeddings = []
-    batch_size = 10  # Reduced to 10 to be safer
+    batch_size = 10 
     
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
@@ -62,12 +60,10 @@ def get_batch_embeddings(texts: list[str]) -> list[list[float]]:
                 break
             except Exception as e:
                 print(f"⚠️ Error/Rate Limit: {e}. Retrying...")
-                time.sleep(5) # Wait before retry
-                if attempt == 2: # If fail 3 times, fill zeros
+                time.sleep(5)
+                if attempt == 2: 
                     embeddings.extend([[0.0]*768] * len(batch))
-        
-        time.sleep(1) # Polite pause
-            
+        time.sleep(1) 
     return embeddings
 
 def clean_text(text: str) -> str:
@@ -115,7 +111,7 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
         all_chunks_text = []
         all_chunks_metadata = [] # To store page numbers
 
-        # 1. Process Page by Page
+        # 1. Process Page by Page to track Page Numbers
         with pdfplumber.open(file.file) as pdf:
             for i, page in enumerate(pdf.pages):
                 page_text = clean_text(page.extract_text() or "")
@@ -126,7 +122,7 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
                 
                 for chunk in chunks:
                     all_chunks_text.append(chunk)
-                    all_chunks_metadata.append(i + 1) # Store Page Number (Index+1)
+                    all_chunks_metadata.append(i + 1) # Page Index + 1
 
         if not all_chunks_text:
             continue
@@ -144,7 +140,7 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
                         text=text_chunk,
                         embedding=embeddings[i],
                         fts=text_chunk,
-                        page_number=all_chunks_metadata[i] # <--- SAVING PAGE NUM
+                        page_number=all_chunks_metadata[i] # <--- Save Page Num
                     )
                 )
         
@@ -157,7 +153,7 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
     return {"message": f"Processed {total_docs} PDFs into {total_chunks} chunks with citations."}
 
 
-# ---------- UPDATED: Q&A with Citations ----------
+# ---------- UPDATED: Q&A with Sources List ----------
 class Question(BaseModel):
     question: str
 
@@ -173,9 +169,9 @@ async def ask(q: Question):
     )
     vec_str = "[" + ",".join(str(x) for x in q_result['embedding']) + "]"
 
-    # Fetch Top 15 (Semantic)
+    # Fetch Top 15 (Semantic) - Now fetching page_number too
     sem_sql = text("""
-        SELECT id, text, page_number,
+        SELECT id, text, page_number, document_id,
                1 - (embedding <=> CAST(:qvec AS vector)) AS score
         FROM chunks
         ORDER BY embedding <=> CAST(:qvec AS vector)
@@ -185,7 +181,7 @@ async def ask(q: Question):
 
     # Fetch Top 15 (Keyword)
     bm_sql = text("""
-        SELECT id, text, page_number,
+        SELECT id, text, page_number, document_id,
                ts_rank_cd(to_tsvector('english', text), plainto_tsquery(:qtext)) AS score
         FROM chunks
         WHERE to_tsvector('english', text) @@ plainto_tsquery(:qtext)
@@ -196,50 +192,54 @@ async def ask(q: Question):
 
     # Hybrid Fusion
     combined = {}
-    # Store page numbers in a separate dict for quick lookup
-    chunk_pages = {} 
+    chunk_meta = {} # Store metadata for later
 
     for r in sem_results:
         combined[r.id] = combined.get(r.id, 0.0) + float(r.score) * 0.7
-        chunk_pages[r.id] = r.page_number
+        chunk_meta[r.id] = {"page": r.page_number}
         
     for r in bm_results:
         combined[r.id] = combined.get(r.id, 0.0) + float(r.score) * 0.3
-        chunk_pages[r.id] = r.page_number
+        chunk_meta[r.id] = {"page": r.page_number}
 
     if not combined:
-        return {"answer": "I couldn't find any relevant information in the uploaded PDFs."}
+        return {"answer": "I couldn't find any relevant information."}
 
     # Top 15 Chunks
     top_ids = sorted(combined.keys(), key=lambda cid: combined[cid], reverse=True)[:15]
     top_chunks = db.query(Chunk).filter(Chunk.id.in_(top_ids)).all()
 
-    # Construct Context with Page Numbers
-    # Format: "Text... [Page 5]"
-    context_parts = []
-    for ch in top_chunks:
-        context_parts.append(f"{ch.text}\n[Source: Page {ch.page_number}]")
-    
-    context = "\n\n---\n\n".join(context_parts)
+    context = "\n\n".join([f"{ch.text} (Page {ch.page_number})" for ch in top_chunks])
 
-    # Citation Prompt
+    # Generate Answer
     prompt = f"""
-You are an expert research assistant. Answer the question based ONLY on the provided context.
-
-IMPORTANT CITATION RULES:
-1. Every time you state a fact, you MUST include the [Source: Page X] tag at the end of the sentence.
-2. If the context has multiple pages, mention all relevant pages.
-3. If the answer is not in the context, say "I don't have enough information."
-
-Context:
-{context}
-
-Question:
-{q.question}
-
-Answer with citations:
+Answer based on context. Be detailed.
+Context: {context}
+Question: {q.question}
+Answer:
 """
     response = llm.generate_content(prompt)
     answer_text = getattr(response, "text", None) or "LLM did not return text."
+    
+    # --- PREPARE SOURCES LIST ---
+    # Collect unique pages referenced in the top chunks
+    sources = []
+    seen_pages = set()
+    
+    # We need to fetch document names for these chunks
+    for ch in top_chunks:
+        doc = db.query(Document).filter(Document.id == ch.document_id).first()
+        doc_name = doc.filename if doc else "Unknown PDF"
+        identifier = (doc_name, ch.page_number)
+        
+        if identifier not in seen_pages:
+            sources.append({"doc": doc_name, "page": ch.page_number})
+            seen_pages.add(identifier)
+            
+    # Sort sources by doc name then page
+    sources.sort(key=lambda x: (x['doc'], x['page']))
 
-    return {"answer": answer_text}
+    return {
+        "answer": answer_text,
+        "sources": sources # <--- Returns list like [{'doc':'file.pdf', 'page':1}, ...]
+    }
