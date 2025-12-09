@@ -228,8 +228,7 @@ import { useEffect, useRef, useState } from "react";
 import axios from "axios";
 import "./App.css";
 
-// Automatically detects API URL (Vercel or Localhost)
-const API_BASE = import.meta.env.VITE_API_URL || "http://127.0.0.1:8000";
+const API_BASE = "https://multi-pdf-rag.onrender.com"; 
 
 function App() {
   const [files, setFiles] = useState([]);
