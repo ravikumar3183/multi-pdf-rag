@@ -4,8 +4,7 @@ Full-stack Retrieval-Augmented Generation (RAG) system:
 
 - FastAPI backend (Python)
 - PostgreSQL + pgvector for hybrid search (BM25 + vector similarity)
-- SentenceTransformers for embeddings
-- Gemini API for answer generation
+- Gemini API for embeddings and answer generation
 - React (Vite) frontend with multi-PDF upload & chat UI
 
 ## Structure
