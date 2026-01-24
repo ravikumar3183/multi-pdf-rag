@@ -1,15 +1,17 @@
 # main.py
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Depends
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 from dotenv import load_dotenv
 import google.generativeai as genai
 import pdfplumber
 import os
 import time
 
-# --- NEW: Smart Splitting Library ---
+# --- Re-ranking Library ---
+from flashrank import Ranker, RerankRequest
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from database import SessionLocal, Document, Chunk, init_db
@@ -18,10 +20,17 @@ from database import SessionLocal, Document, Chunk, init_db
 load_dotenv()
 init_db()
 
+# ---------- Re-ranker Setup ----------
+ranker = Ranker(model_name="ms-marco-MiniLM-L-12-v2")
+
 # ---------- Gemini setup ----------
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-# Using 1.5 Flash for high limits and stability
-llm = genai.GenerativeModel("gemini-2.5-flash")
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    print("❌ ERROR: No API Key found in environment variables!")
+else:
+    print(f"✅ Loaded API Key starting with: {api_key[:10]}...")
+# Using 1.5 Flash for stability
+llm = genai.GenerativeModel("gemini-3-flash")
 
 # ---------- FastAPI app ----------
 app = FastAPI()
@@ -33,6 +42,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------- DATABASE DEPENDENCY (THE FIX) ----------
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close() # <--- This guarantees the connection closes!
 
 # ---------- SMART CHUNKING ----------
 text_splitter = RecursiveCharacterTextSplitter(
@@ -72,94 +89,66 @@ def clean_text(text: str) -> str:
 
 @app.get("/")
 def home():
-    return {"message": "Backend running with Citations!"}
+    return {"message": "Backend running (Database Fix Applied)!"}
 
 @app.get("/list_documents")
-def list_documents():
-    db = SessionLocal()
+def list_documents(db: Session = Depends(get_db)):
     docs = db.query(Document).all()
     return {
         "count": len(docs),
         "documents": [{"id": d.id, "filename": d.filename} for d in docs]
     }
 
-
-# main.py (Add this new endpoint)
-
 @app.post("/summarize_document/{doc_id}")
-async def summarize_document(doc_id: int):
-    db = SessionLocal()
-    try:
-        # 1. Fetch all chunks for this document, ordered by page
-        chunks = db.query(Chunk).filter(Chunk.document_id == doc_id).order_by(Chunk.page_number).all()
-        
-        if not chunks:
-            return {"summary": "No content found to summarize."}
+async def summarize_document(doc_id: int, db: Session = Depends(get_db)):
+    chunks = db.query(Chunk).filter(Chunk.document_id == doc_id).order_by(Chunk.page_number).all()
+    if not chunks:
+        return {"summary": "No content found to summarize."}
 
-        # 2. Group text by page number
-        pages = {}
-        for chunk in chunks:
-            if chunk.page_number not in pages:
-                pages[chunk.page_number] = []
-            pages[chunk.page_number].append(chunk.text)
+    pages = {}
+    for chunk in chunks:
+        if chunk.page_number not in pages:
+            pages[chunk.page_number] = []
+        pages[chunk.page_number].append(chunk.text)
+    
+    sorted_pages = sorted(pages.keys())
+    
+    batch_size = 5
+    mini_summaries = []
+    
+    for i in range(0, len(sorted_pages), batch_size):
+        batch_page_nums = sorted_pages[i : i + batch_size]
+        batch_text = ""
+        for p in batch_page_nums:
+            batch_text += f"\n--- Page {p} ---\n" + " ".join(pages[p])
         
-        sorted_pages = sorted(pages.keys())
-        
-        # 3. "Map" Step: Summarize every 5 pages
-        batch_size = 5
-        mini_summaries = []
-        
-        for i in range(0, len(sorted_pages), batch_size):
-            batch_page_nums = sorted_pages[i : i + batch_size]
-            batch_text = ""
-            for p in batch_page_nums:
-                batch_text += f"\n--- Page {p} ---\n" + " ".join(pages[p])
-            
-            # Send to Gemini
-            prompt = f"""
-            You are a rigorous analyst. Summarize the following {len(batch_page_nums)} pages of a document.
-            Focus on key facts, dates, and definitions.
-            
-            Text:
-            {batch_text[:30000]} # Truncate safety for very large text
-            
-            Summary:
-            """
-            response = llm.generate_content(prompt)
-            mini_summaries.append(response.text)
-            time.sleep(1) # Rate limit safety
-
-        # 4. "Reduce" Step: Master Summary
-        combined_summaries = "\n\n".join(mini_summaries)
-        final_prompt = f"""
-        Here are summaries of different sections of a document. 
-        Combine them into one cohesive, structured Master Summary.
-        Use bullet points for key findings.
-        
-        Sections:
-        {combined_summaries}
-        
-        Master Summary:
+        prompt = f"""
+        Summarize the following {len(batch_page_nums)} pages of a document.
+        Focus on key facts, dates, and definitions.
+        Text: {batch_text[:30000]}
+        Summary:
         """
-        final_response = llm.generate_content(final_prompt)
-        final_summary = final_response.text
+        response = llm.generate_content(prompt)
+        mini_summaries.append(response.text)
+        time.sleep(1) 
 
-        # 5. Save to Database
-        doc = db.query(Document).filter(Document.id == doc_id).first()
-        doc.summary = final_summary
-        db.commit()
+    combined_summaries = "\n\n".join(mini_summaries)
+    final_prompt = f"""
+    Combine these section summaries into one Master Summary.
+    Sections: {combined_summaries}
+    Master Summary:
+    """
+    final_response = llm.generate_content(final_prompt)
+    final_summary = final_response.text
 
-        return {"summary": final_summary}
+    doc = db.query(Document).filter(Document.id == doc_id).first()
+    doc.summary = final_summary
+    db.commit()
 
-    except Exception as e:
-        return {"summary": f"Error generating summary: {str(e)}"}
-    finally:
-        db.close()
-
+    return {"summary": final_summary}
 
 @app.delete("/delete_document/{doc_id}")
-def delete_document(doc_id: int):
-    db = SessionLocal()
+def delete_document(doc_id: int, db: Session = Depends(get_db)):
     doc = db.query(Document).filter(Document.id == doc_id).first()
     if not doc:
         return {"message": "Document not found"}
@@ -169,10 +158,8 @@ def delete_document(doc_id: int):
     db.commit()
     return {"message": f"Deleted {doc.filename}"}
 
-# ---------- UPDATED: Upload with Page Numbers ----------
 @app.post("/upload_pdfs")
-async def upload_pdfs(files: list[UploadFile] = File(...)):
-    db = SessionLocal()
+async def upload_pdfs(files: list[UploadFile] = File(...), db: Session = Depends(get_db)):
     total_chunks = 0
     total_docs = 0
 
@@ -183,28 +170,23 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
         db.refresh(doc)
 
         all_chunks_text = []
-        all_chunks_metadata = [] # To store page numbers
+        all_chunks_metadata = [] 
 
-        # 1. Process Page by Page to track Page Numbers
         with pdfplumber.open(file.file) as pdf:
             for i, page in enumerate(pdf.pages):
                 page_text = clean_text(page.extract_text() or "")
                 if not page_text: continue
                 
-                # Split this page's text
                 chunks = text_splitter.split_text(page_text)
-                
                 for chunk in chunks:
                     all_chunks_text.append(chunk)
-                    all_chunks_metadata.append(i + 1) # Page Index + 1
+                    all_chunks_metadata.append(i + 1)
 
         if not all_chunks_text:
             continue
 
-        # 2. Embed All Chunks
         embeddings = get_batch_embeddings(all_chunks_text)
 
-        # 3. Save to DB with Page Numbers
         chunk_objects = []
         for i, text_chunk in enumerate(all_chunks_text):
             if i < len(embeddings):
@@ -214,7 +196,7 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
                         text=text_chunk,
                         embedding=embeddings[i],
                         fts=text_chunk,
-                        page_number=all_chunks_metadata[i] # <--- Save Page Num
+                        page_number=all_chunks_metadata[i]
                     )
                 )
         
@@ -224,18 +206,17 @@ async def upload_pdfs(files: list[UploadFile] = File(...)):
         total_chunks += len(all_chunks_text)
         total_docs += 1
 
-    return {"message": f"Processed {total_docs} PDFs into {total_chunks} chunks with citations."}
+    return {"message": f"Processed {total_docs} PDFs into {total_chunks} chunks."}
 
-
-# ---------- UPDATED: Q&A with Sources List ----------
+# ---------- Q&A ----------
 class Question(BaseModel):
     question: str
+    history: list[dict] = []
 
 @app.post("/ask")
-async def ask(q: Question):
-    db = SessionLocal()
+async def ask(q: Question, db: Session = Depends(get_db)):
     
-    # Embed Question
+    # 1. Embed Question
     q_result = genai.embed_content(
         model="models/text-embedding-004",
         content=q.question,
@@ -243,77 +224,96 @@ async def ask(q: Question):
     )
     vec_str = "[" + ",".join(str(x) for x in q_result['embedding']) + "]"
 
-    # Fetch Top 15 (Semantic) - Now fetching page_number too
+    # 2. Broad Retrieval
     sem_sql = text("""
         SELECT id, text, page_number, document_id,
                1 - (embedding <=> CAST(:qvec AS vector)) AS score
         FROM chunks
         ORDER BY embedding <=> CAST(:qvec AS vector)
-        LIMIT 15;
+        LIMIT 20;
     """)
     sem_results = db.execute(sem_sql, {"qvec": vec_str}).fetchall()
 
-    # Fetch Top 15 (Keyword)
     bm_sql = text("""
         SELECT id, text, page_number, document_id,
                ts_rank_cd(to_tsvector('english', text), plainto_tsquery(:qtext)) AS score
         FROM chunks
         WHERE to_tsvector('english', text) @@ plainto_tsquery(:qtext)
         ORDER BY score DESC
-        LIMIT 15;
+        LIMIT 20;
     """)
     bm_results = db.execute(bm_sql, {"qtext": q.question}).fetchall()
 
-    # Hybrid Fusion
-    combined = {}
-    chunk_meta = {} # Store metadata for later
-
+    # 3. Deduplicate
+    candidates = {}
     for r in sem_results:
-        combined[r.id] = combined.get(r.id, 0.0) + float(r.score) * 0.7
-        chunk_meta[r.id] = {"page": r.page_number}
+        candidates[r.id] = {"id": r.id, "text": r.text, "meta": {"page": r.page_number, "doc_id": r.document_id}}
         
     for r in bm_results:
-        combined[r.id] = combined.get(r.id, 0.0) + float(r.score) * 0.3
-        chunk_meta[r.id] = {"page": r.page_number}
+        if r.id not in candidates:
+            candidates[r.id] = {"id": r.id, "text": r.text, "meta": {"page": r.page_number, "doc_id": r.document_id}}
 
-    if not combined:
+    if not candidates:
         return {"answer": "I couldn't find any relevant information."}
 
-    # Top 15 Chunks
-    top_ids = sorted(combined.keys(), key=lambda cid: combined[cid], reverse=True)[:15]
-    top_chunks = db.query(Chunk).filter(Chunk.id.in_(top_ids)).all()
+    # 4. Re-rank
+    passages = list(candidates.values()) 
+    rerank_request = RerankRequest(query=q.question, passages=passages)
+    ranked_results = ranker.rerank(rerank_request)
 
-    context = "\n\n".join([f"{ch.text} (Page {ch.page_number})" for ch in top_chunks])
-
-    # Generate Answer
-    prompt = f"""
-Answer based on context. Be detailed.
-Context: {context}
-Question: {q.question}
-Answer:
-"""
-    response = llm.generate_content(prompt)
-    answer_text = getattr(response, "text", None) or "LLM did not return text."
+    # 5. Filter (Confidence Threshold)
+    good_results = [r for r in ranked_results if r['score'] > 0.75]
     
-    # --- PREPARE SOURCES LIST ---
-    # Collect unique pages referenced in the top chunks
+    if not good_results:
+        top_results = [] 
+    else:
+        top_results = good_results[:7]
+
+    context_parts = []
     sources = []
     seen_pages = set()
-    
-    # We need to fetch document names for these chunks
-    for ch in top_chunks:
-        doc = db.query(Document).filter(Document.id == ch.document_id).first()
+
+    for r in top_results:
+        context_parts.append(f"{r['text']} (Page {r['meta']['page']})")
+        doc_id = r['meta']['doc_id']
+        page_num = r['meta']['page']
+        doc = db.query(Document).filter(Document.id == doc_id).first()
         doc_name = doc.filename if doc else "Unknown PDF"
-        identifier = (doc_name, ch.page_number)
         
+        identifier = (doc_name, page_num)
         if identifier not in seen_pages:
-            sources.append({"doc": doc_name, "page": ch.page_number})
+            sources.append({"doc": doc_name, "page": page_num})
             seen_pages.add(identifier)
-            
-    # Sort sources by doc name then page
+
+    context = "\n\n".join(context_parts)
     sources.sort(key=lambda x: (x['doc'], x['page']))
+
+    # 6. Format History
+    history_text = ""
+    if q.history:
+        history_text = "Chat History:\n"
+        for msg in q.history[-6:]:
+            role = "User" if msg['role'] == "user" else "Assistant"
+            clean_msg = msg['text'].replace("\n", " ")
+            history_text += f"{role}: {clean_msg}\n"
+
+    # 7. Generate Answer
+    prompt = f"""
+    You are a helpful AI assistant.
+    
+    If the provided Context below is relevant, answer the user's question based strictly on it.
+    If the Context is empty or irrelevant (like for "ok", "hello", "thanks"), just answer politely based on the chat history or general knowledge.
+    {history_text}
+    DOCUMENT CONTEXT:
+    {context}
+    USER QUESTION: {q.question}
+    ANSWER:
+    """
+    
+    response = llm.generate_content(prompt)
+    answer_text = getattr(response, "text", None) or "LLM did not return text."
 
     return {
         "answer": answer_text,
-        "sources": sources # <--- Returns list like [{'doc':'file.pdf', 'page':1}, ...]
+        "sources": sources
     }

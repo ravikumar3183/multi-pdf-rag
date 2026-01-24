@@ -26,7 +26,6 @@ class Chunk(Base):
     id = Column(Integer, primary_key=True)
     document_id = Column(Integer, ForeignKey("documents.id"))
     text = Column(Text)
-    # CHANGED: 384 -> 768 to match Gemini embeddings
     embedding = Column(Vector(768)) 
     fts = Column(Text)
     page_number = Column(Integer, default=1)
