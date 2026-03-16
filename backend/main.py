@@ -69,7 +69,7 @@ def get_batch_embeddings(texts: list[str]) -> list[list[float]]:
         for attempt in range(3):
             try:
                 result = genai.embed_content(
-                    model="models/text-embedding-004",
+                    model="text-embedding-004",
                     content=batch,
                     task_type="retrieval_document"
                 )
