@@ -3,7 +3,9 @@ import ReactMarkdown from 'react-markdown';
 import axios from "axios";
 import "./App.css";
 
- const API_BASE = "https://multi-pdf-rag.onrender.com";
+const API_BASE = import.meta.env.DEV
+  ? "http://localhost:8000"
+  : import.meta.env.VITE_BACKEND_URL || "https://multi-pdf-rag.onrender.com";
 
 
 function App() {
@@ -50,21 +52,30 @@ function App() {
   // --- Handle Summarize ---
   const handleSummarize = async (docId) => {
     setLoading(true);
-    setMessages(prev => [...prev, { role: "assistant", text: "Generating summary... ⏳" }]);
+    const messageId = `summary-${docId}-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: messageId, role: "assistant", text: "Generating summary... ⏳" },
+    ]);
     
     try {
       const res = await axios.post(`${API_BASE}/summarize_document/${docId}`);
-      setMessages(prev => {
-        const newMsgs = [...prev];
-        newMsgs[newMsgs.length - 1] = { 
-          role: "assistant", 
-          text: `📝 Summary:\n\n${res.data.summary}` 
-        };
-        return newMsgs;
-      });
+      setMessages((prev) => prev.map((message) => (
+        message.id === messageId
+          ? { ...message, text: `📝 Summary:\n\n${res.data.summary}` }
+          : message
+      )));
     } catch (err) {
-      console.error(err);
-      setMessages(prev => [...prev, { role: "assistant", text: "Failed to generate summary." }]);
+      console.error("Summary request failed:", err.response?.data || err.message);
+      const detail = err.response?.data?.detail;
+      const errorMessage = typeof detail === "string"
+        ? detail
+        : "Failed to generate summary. Check the backend connection and try again.";
+      setMessages((prev) => prev.map((message) => (
+        message.id === messageId
+          ? { ...message, text: errorMessage }
+          : message
+      )));
     } finally {
       setLoading(false);
     }
@@ -152,6 +163,7 @@ function App() {
         { role: "assistant", text: answer, sources: sources },
       ]);
     } catch (err) {
+      console.error("Question request failed:", err.response?.data || err.message);
       setMessages((prev) => [
         ...prev,
         { role: "assistant", text: "Error connecting to server." },
@@ -195,7 +207,7 @@ function App() {
             <h1>RAG Chatbot</h1>
           </div>
           <div style={{display: "flex", gap: "10px", alignItems: "center"}}>
-            <span className="model-badge">Gemini 3 Flash</span>
+            <span className="model-badge">Gemini 3.8 Flash</span>
             <button onClick={clearChat} className="new-chat-btn">
               + New Chat
             </button>
@@ -273,7 +285,7 @@ function App() {
               )}
 
               {messages.map((m, idx) => (
-                <div key={idx} className={`message-row role-${m.role}`}>
+                <div key={m.id ?? idx} className={`message-row role-${m.role}`}>
                   <div className="message-avatar">
                     {m.role === "user" ? "👤" : "✨"}
                   </div>
@@ -331,4 +343,3 @@ function App() {
 }
 
 export default App;
-
